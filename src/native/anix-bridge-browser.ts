@@ -306,7 +306,16 @@ export function createBrowserAnixBridge() {
       c.getClient().endpoints.release.episodeUpdates?.(toPositiveInt(releaseId), page)),
     'anix:getDirectVideoLink': async (_c, args) => {
       const embedUrl = String(args?.[0] || '');
-      // TV web prod: Kodik resolve on api.anixapp.com (tv.anixapp.com static nginx → 405 on POST).
+      // Prefer AnixBack server-side resolve (stable IP / headers for Kodik etc.).
+      try {
+        const { resolveViaAnixback } = await import('../services/stream-resolve');
+        const remote = await resolveViaAnixback(embedUrl);
+        if (remote?.directUrl) return remote;
+        if (remote?.error === 'libria-release-missing') return remote;
+      } catch (e) {
+        console.warn('[stream] anixback resolve failed:', e);
+      }
+      // TV web prod: dedicated bridge invoke if /api/stream unavailable on older deploy.
       if (import.meta.env.PROD && isTvMode()) {
         const res = await fetch(tvBridgeInvokeUrl(), {
           method: 'POST',
@@ -571,6 +580,20 @@ export function createBrowserAnixBridge() {
     'anix:setPrivacyFriendRequests': h((c, state) => c.getClient().endpoints.settings.setPrivacyFriendRequests(state)),
     'anix:getLoginInfo': h((c) => c.getClient().endpoints.settings.getLoginInfo()),
     'anix:changeLogin': h((c, newLogin) => c.getClient().endpoints.settings.changeLogin(newLogin)),
+    'anix:changeEmail': h((c, data) => c.getClient().endpoints.settings.changeEmail(data)),
+    'anix:changeEmailResend': h((c, data) => c.getClient().endpoints.settings.changeEmailResend(data)),
+    'anix:changeEmailVerify': h((c, data) => c.getClient().endpoints.settings.changeEmailVerify(data)),
+    'anix:changePassword': h(async (c, data) => {
+      const res = await c.getClient().endpoints.settings.changePassword(data);
+      const token = typeof res?.token === 'string' ? res.token.trim() : '';
+      const ok = res && (res.code === 0 || res.code === undefined) && token;
+      if (ok) {
+        const cfg = c.loadConfig();
+        c.saveConfig({ token });
+        c.resetClient();
+      }
+      return res;
+    }),
     'anix:getBadges': h((c, page = 0) => c.getClient().endpoints.settings.getBadges(page)),
     'anix:setBadge': h((c, id) => c.getClient().endpoints.settings.setBadge(id)),
     'anix:removeBadge': h((c) => c.getClient().endpoints.settings.removeBadge()),

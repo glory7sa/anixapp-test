@@ -11,6 +11,7 @@ const { ANIXART_UA } = require('./lib/constants');
 const { attachAnixErrorMessages, enrichAnixError } = require('./lib/anix-errors');
 const homeCustomFilter = require('./home-custom-filter');
 const { getDirectVideoLink } = require('./lib/direct-video-link');
+const { resolveViaAnixback } = require('./lib/stream-resolve-remote');
 
 const DEFAULT_BASE_URL = 'https://api-s.anixsekai.com';
 
@@ -96,7 +97,18 @@ function createAnixBridgeCore(options = {}) {
   }
 
   async function getDirectVideoLinkHandler(embedUrl) {
-    return getDirectVideoLink(embedUrl);
+    const url = String(embedUrl || '').trim();
+    if (!url) {
+      return { directUrl: null, quality: null, qualityMap: {}, downloadHeaders: {}, skip: null, error: null };
+    }
+    try {
+      const remote = await resolveViaAnixback(url);
+      if (remote?.directUrl) return remote;
+      if (remote?.error === 'libria-release-missing') return remote;
+    } catch (e) {
+      console.warn('[stream] anixback resolve failed, local fallback:', e?.message || e);
+    }
+    return getDirectVideoLink(url);
   }
 
   const ctx = () => ({
@@ -802,6 +814,35 @@ function createAnixBridgeCore(options = {}) {
       c.getClient().endpoints.settings.setPrivacyFriendRequests(state)),
     'anix:getLoginInfo': h((c) => c.getClient().endpoints.settings.getLoginInfo()),
     'anix:changeLogin': h((c, newLogin) => c.getClient().endpoints.settings.changeLogin(newLogin)),
+    'anix:changeEmail': h((c, data) => c.getClient().endpoints.settings.changeEmail(data)),
+    'anix:changeEmailResend': h((c, data) => c.getClient().endpoints.settings.changeEmailResend(data)),
+    'anix:changeEmailVerify': h((c, data) => c.getClient().endpoints.settings.changeEmailVerify(data)),
+    'anix:changePassword': h(async (c, data) => {
+      const res = await c.getClient().endpoints.settings.changePassword(data);
+      const token = typeof res?.token === 'string' ? res.token.trim() : '';
+      const ok = res && (res.code === 0 || res.code === undefined) && token;
+      if (ok) {
+        const cfg = c.loadConfig();
+        c.saveConfig({ token });
+        c.resetClient();
+        try {
+          const accountsStore = require('./lib/accounts-store');
+          const id = Number(cfg.profileId);
+          if (id > 0) {
+            accountsStore.upsertAccount({
+              id,
+              login: cfg.profileLogin,
+              avatar: cfg.profileAvatar,
+              token,
+              profileRaw: cfg.profileRaw,
+            });
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      return res;
+    }),
     'anix:getBadges': h((c, page = 0) => c.getClient().endpoints.settings.getBadges(page)),
     'anix:setBadge': h((c, id) => c.getClient().endpoints.settings.setBadge(id)),
     'anix:removeBadge': h((c) => c.getClient().endpoints.settings.removeBadge()),

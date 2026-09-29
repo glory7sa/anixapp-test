@@ -65,6 +65,7 @@ declare global {
       closePlayerWindow: () => void;
       togglePlayerFullScreen: () => Promise<boolean>;
       togglePlayerAlwaysOnTop: () => Promise<boolean>;
+      setPlayerWindowTitle?: (payload: { title?: string; episode?: string }) => void;
       isPlayerOpen: () => Promise<boolean>;
       openExternal: (url: string) => void;
       startTvLanLogin?: () => Promise<{ url: string | null; error?: string }>;
@@ -374,18 +375,33 @@ declare global {
       composerReadyToClose?: () => void;
       composerPublished?: (data: { articleId?: number; channelId?: number } | null) => void;
       composerDraftsChanged?: () => void;
-      // Logging (diagnostics)
-      logRenderer?: (entry: { level?: string; ch?: string; msg?: string; data?: unknown }) => Promise<void>;
-      logGetSessions?: () => Promise<Array<{ id: string; ts: string }>>;
-      logGetSessionLog?: (sessionId: string, file: string, limit?: number) => Promise<Array<Record<string, unknown>>>;
-      logGetSystemInfo?: () => Promise<Record<string, unknown>>;
-      logCollectZip?: () => Promise<{ ok: boolean; path?: string; error?: string }>;
-      logOpenZip?: (path: string) => Promise<void>;
-      logOpenFolder?: () => Promise<void>;
-      logGetFolderPath?: () => Promise<string | null>;
-      logGetSessionDir?: () => Promise<string | null>;
-      logGetLobbyPath?: () => Promise<string | null>;
-      logLobbyLine?: (line: string) => Promise<void>;
+      diagnosticsGet?: (opts?: {
+        channel?: string;
+        level?: string;
+        limit?: number;
+        sinceId?: string;
+      }) => Promise<Array<Record<string, unknown>>>;
+      diagnosticsStats?: () => Promise<{
+        total: number;
+        max: number;
+        subscribers: number;
+        byChannel: Record<string, number>;
+        byLevel: Record<string, number>;
+      }>;
+      diagnosticsClear?: () => Promise<{ ok: boolean; count: number }>;
+      diagnosticsSubscribe?: () => Promise<{ ok: boolean; count: number }>;
+      diagnosticsUnsubscribe?: () => Promise<{ ok: boolean }>;
+      diagnosticsExportZip?: () => Promise<{
+        ok: boolean;
+        canceled?: boolean;
+        path?: string;
+        count?: number;
+        deviceSummary?: { os?: string; cpu?: string; ramGb?: number };
+      }>;
+      diagnosticsPaths?: () => Promise<{ dir: string; file: string; zipDefaultDir: string }>;
+      diagnosticsOpenDir?: () => Promise<{ ok: boolean; path?: string }>;
+      diagnosticsReveal?: (filePath: string) => Promise<{ ok: boolean }>;
+      onDiagnosticsEntry?: (cb: (entry: Record<string, unknown>) => void) => () => void;
       sendLobbyActionLogToPlayer?: (entry: Record<string, unknown>) => void;
     };
   }
