@@ -13,6 +13,7 @@
 
   import ZoomScaleSlider from '../../../components/ZoomScaleSlider.svelte';
   import { isPhoneMode } from '../../../platform/phone';
+  import NavigationSettingsSection from '../../../components/settings/NavigationSettingsSection.svelte';
   import { DEFAULT_ZOOM, normalizeZoom, type ZoomLevel } from '../../../utils/zoom';
 
   let cardLayout = $state<CardLayout>(getCardLayout());
@@ -237,4 +238,10 @@
       </button>
     </div>
   </section>
+
+  <!-- Раскладка боковых панелей и миниатюры — только ПК: на телефоне панели
+       скрыты, навигация нижняя (PhoneBottomNav). -->
+  {#if !isPhoneMode()}
+    <NavigationSettingsSection />
+  {/if}
 </div>

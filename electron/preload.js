@@ -4,6 +4,11 @@ ipcRenderer.on('player:fullscreen', (_, isFullscreen) => {
   window.dispatchEvent(new CustomEvent('player-fullscreen', { detail: isFullscreen }));
 });
 
+ipcRenderer.on('player:windowTitle', (_, title) => {
+  const label = typeof title === 'string' && title.trim() ? title.trim() : 'AnixApp';
+  document.title = label;
+});
+
 ipcRenderer.on('player:applySync', (_, playback) => {
   window.dispatchEvent(new CustomEvent('player:applySync', { detail: playback }));
 });
@@ -173,6 +178,7 @@ contextBridge.exposeInMainWorld('electron', {
   closePlayerWindow: () => ipcRenderer.send('player:close'),
   togglePlayerFullScreen: () => ipcRenderer.invoke('player:toggleFullScreen'),
   togglePlayerAlwaysOnTop: () => ipcRenderer.invoke('player:toggleAlwaysOnTop'),
+  setPlayerWindowTitle: (payload) => ipcRenderer.send('player:setWindowTitle', payload),
   isPlayerOpen: () => ipcRenderer.invoke('player:isOpen'),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   startTvLanLogin: () => ipcRenderer.invoke('tvLan:start'),
@@ -283,18 +289,22 @@ contextBridge.exposeInMainWorld('electron', {
   composerReadyToClose: () => ipcRenderer.send('composer:readyToClose'),
   composerPublished: (data) => ipcRenderer.send('composer:published', data ?? null),
   composerDraftsChanged: () => ipcRenderer.send('composer:draftsChanged'),
+  // Diagnostics (console + network from all windows)
+  diagnosticsGet: (opts) => ipcRenderer.invoke('diagnostics:get', opts ?? {}),
+  diagnosticsStats: () => ipcRenderer.invoke('diagnostics:stats'),
+  diagnosticsClear: () => ipcRenderer.invoke('diagnostics:clear'),
+  diagnosticsSubscribe: () => ipcRenderer.invoke('diagnostics:subscribe'),
+  diagnosticsUnsubscribe: () => ipcRenderer.invoke('diagnostics:unsubscribe'),
+  diagnosticsExportZip: () => ipcRenderer.invoke('diagnostics:exportZip'),
+  diagnosticsPaths: () => ipcRenderer.invoke('diagnostics:paths'),
+  diagnosticsOpenDir: () => ipcRenderer.invoke('diagnostics:openDir'),
+  diagnosticsReveal: (filePath) => ipcRenderer.invoke('diagnostics:reveal', filePath),
+  onDiagnosticsEntry: (cb) => {
+    const handler = (_e, entry) => cb(entry);
+    ipcRenderer.on('diagnostics:entry', handler);
+    return () => ipcRenderer.removeListener('diagnostics:entry', handler);
+  },
   // Logging
-  logRenderer:      (entry) => ipcRenderer.invoke('log:renderer', entry),
-  logGetSessions:   ()      => ipcRenderer.invoke('log:getSessions'),
-  logGetSessionLog: (sessionId, file, limit) => ipcRenderer.invoke('log:getSessionLog', sessionId, file, limit),
-  logGetSystemInfo: ()      => ipcRenderer.invoke('log:getSystemInfo'),
-  logCollectZip:    ()      => ipcRenderer.invoke('log:collectZip'),
-  logOpenZip:       (p)     => ipcRenderer.invoke('log:openZip', p),
-  logOpenFolder:    ()      => ipcRenderer.invoke('log:openFolder'),
-  logGetFolderPath: ()      => ipcRenderer.invoke('log:getFolderPath'),
-  logGetSessionDir: ()      => ipcRenderer.invoke('log:getSessionDir'),
-  logGetLobbyPath:  ()      => ipcRenderer.invoke('log:getLobbyPath'),
-  logLobbyLine:     (line)  => ipcRenderer.invoke('log:lobbyLine', line),
   sendLobbyActionLogToPlayer: (entry) => ipcRenderer.send('lobby:actionLogToPlayer', entry),
 });
 
@@ -644,6 +654,10 @@ contextBridge.exposeInMainWorld('anixApi', {
     setPrivacyFriendRequests: (state) => ipcRenderer.invoke('anix:setPrivacyFriendRequests', state),
     getLoginInfo: () => ipcRenderer.invoke('anix:getLoginInfo'),
     changeLogin: (newLogin) => ipcRenderer.invoke('anix:changeLogin', newLogin),
+    changeEmail: (data) => ipcRenderer.invoke('anix:changeEmail', data),
+    changeEmailResend: (data) => ipcRenderer.invoke('anix:changeEmailResend', data),
+    changeEmailVerify: (data) => ipcRenderer.invoke('anix:changeEmailVerify', data),
+    changePassword: (data) => ipcRenderer.invoke('anix:changePassword', data),
     getBadges: (page = 0) => ipcRenderer.invoke('anix:getBadges', page),
     setBadge: (id) => ipcRenderer.invoke('anix:setBadge', id),
     removeBadge: () => ipcRenderer.invoke('anix:removeBadge'),

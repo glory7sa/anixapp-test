@@ -2,12 +2,15 @@ import Hls from 'hls.js';
 import { isHlsUrl } from '../_utils';
 import { buildHlsConfig } from './hls-media-context';
 import { isLocalMediaUrl } from '../../../utils/local-media-url';
+import { diagUrl, playDiag } from '../../../utils/play-diag';
 
 type VideoWithHls = HTMLVideoElement & {
   _hls?: Hls;
   _hlsGen?: number;
   _hlsReady?: () => void;
   _hlsError?: (event: string, data: { fatal: boolean; type: string }) => void;
+  _hlsFragLoaded?: () => void;
+  _hlsNetTimers?: ReturnType<typeof setTimeout>[];
 };
 
 export type HlsFatalKind = 'recover' | 'reresolve' | 'fallback';
@@ -15,9 +18,13 @@ export type HlsFatalKind = 'recover' | 'reresolve' | 'fallback';
 export interface SwapMediaHandlers {
   onReady?: () => void;
   onFatal?: (kind: HlsFatalKind) => void;
+  /** Soft reconnect in progress (network backoff / stall kick). */
+  onReconnect?: (active: boolean) => void;
   /** Полностью пересоздать HLS — иначе старый кадр остаётся в <video> и Anime4K «залипает». */
   forceNew?: boolean;
 }
+
+const NET_BACKOFF_MS = [0, 1500, 3000] as const;
 
 export function getAttachedHls(video: HTMLVideoElement): Hls | undefined {
   return (video as VideoWithHls)._hls;
@@ -25,6 +32,7 @@ export function getAttachedHls(video: HTMLVideoElement): Hls | undefined {
 
 export function detachHls(video: HTMLVideoElement): void {
   const el = video as VideoWithHls;
+  clearNetBackoffTimers(el);
   if (el._hls) {
     unbindHlsHandlers(el);
     try { el._hls.destroy(); } catch { /* ignore */ }
@@ -32,51 +40,137 @@ export function detachHls(video: HTMLVideoElement): void {
   }
 }
 
+function clearNetBackoffTimers(el: VideoWithHls): void {
+  const timers = el._hlsNetTimers;
+  if (!timers?.length) return;
+  for (const t of timers) clearTimeout(t);
+  el._hlsNetTimers = [];
+}
+
 function unbindHlsHandlers(el: VideoWithHls): void {
   const hls = el._hls;
   if (!hls) return;
   if (el._hlsReady) hls.off(Hls.Events.MANIFEST_PARSED, el._hlsReady);
   if (el._hlsError) hls.off(Hls.Events.ERROR, el._hlsError);
+  if (el._hlsFragLoaded) hls.off(Hls.Events.FRAG_LOADED, el._hlsFragLoaded);
   el._hlsReady = undefined;
   el._hlsError = undefined;
+  el._hlsFragLoaded = undefined;
 }
 
 function bindHlsHandlers(hls: Hls, video: HTMLVideoElement, handlers: SwapMediaHandlers): void {
   const el = video as VideoWithHls;
   unbindHlsHandlers(el);
+  clearNetBackoffTimers(el);
   const gen = (el._hlsGen ?? 0) + 1;
   el._hlsGen = gen;
+  el._hlsNetTimers = [];
 
   const onReady = () => {
     if (el._hlsGen !== gen) return;
+    handlers.onReconnect?.(false);
     handlers.onReady?.();
   };
 
-  let attempts = 0;
+  let mediaAttempts = 0;
+  let netAttempts = 0;
   let reResolveAttempts = 0;
-  const onError = (_evt: string, data: { fatal: boolean; type: string }) => {
+  let netBackoffActive = false;
+
+  const resetSoftCounters = () => {
+    mediaAttempts = 0;
+    netAttempts = 0;
+    reResolveAttempts = 0;
+    netBackoffActive = false;
+    clearNetBackoffTimers(el);
+    handlers.onReconnect?.(false);
+  };
+
+  const onFragLoaded = () => {
     if (el._hlsGen !== gen) return;
+    // Successful fragment → forget prior soft failures so one drop/hour doesn't stack.
+    resetSoftCounters();
+  };
+
+  const kickStartLoad = (atTime?: number) => {
+    try {
+      if (typeof atTime === 'number' && Number.isFinite(atTime) && atTime > 0) {
+        hls.startLoad(atTime);
+      } else {
+        hls.startLoad();
+      }
+    } catch { /* ignore */ }
+  };
+
+  const scheduleNetworkBackoff = () => {
+    if (netBackoffActive) return;
+    netBackoffActive = true;
+    handlers.onReconnect?.(true);
+    handlers.onFatal?.('recover');
+
+    for (const delay of NET_BACKOFF_MS) {
+      const timer = setTimeout(() => {
+        if (el._hlsGen !== gen || el._hls !== hls) return;
+        const ct = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+        kickStartLoad(ct > 0.25 ? ct : undefined);
+      }, delay);
+      el._hlsNetTimers!.push(timer);
+    }
+
+    // After last backoff kick, if still broken hls.js will fire another fatal → escalate.
+    const escalateAfter = NET_BACKOFF_MS[NET_BACKOFF_MS.length - 1] + 4_000;
+    const escalateTimer = setTimeout(() => {
+      if (el._hlsGen !== gen || el._hls !== hls) return;
+      if (!netBackoffActive) return;
+      netBackoffActive = false;
+      clearNetBackoffTimers(el);
+      if (reResolveAttempts++ < 2) {
+        handlers.onFatal?.('reresolve');
+      } else {
+        handlers.onReconnect?.(false);
+        handlers.onFatal?.('fallback');
+      }
+    }, escalateAfter);
+    el._hlsNetTimers!.push(escalateTimer);
+  };
+
+  const onError = (_evt: string, data: { fatal: boolean; type: string; details?: string; response?: { code?: number } }) => {
+    if (el._hlsGen !== gen) return;
+    if (data.fatal) {
+      playDiag('hls:error', { type: data.type, details: data.details, http: data.response?.code });
+    }
     if (!data.fatal) {
       if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
       return;
     }
-    if (data.type === Hls.ErrorTypes.MEDIA_ERROR && attempts++ < 3) {
+    if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaAttempts++ < 3) {
       hls.recoverMediaError();
       handlers.onFatal?.('recover');
-    } else if (data.type === Hls.ErrorTypes.NETWORK_ERROR && attempts++ < 2) {
-      hls.startLoad();
-      handlers.onFatal?.('recover');
-    } else if (reResolveAttempts++ < 2) {
+      return;
+    }
+    if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+      if (netAttempts++ < 1 || !netBackoffActive) {
+        scheduleNetworkBackoff();
+        return;
+      }
+      // Already in backoff window — wait for escalate timer.
+      return;
+    }
+    if (reResolveAttempts++ < 2) {
+      handlers.onReconnect?.(true);
       handlers.onFatal?.('reresolve');
     } else {
+      handlers.onReconnect?.(false);
       handlers.onFatal?.('fallback');
     }
   };
 
   el._hlsReady = onReady;
   el._hlsError = onError;
+  el._hlsFragLoaded = onFragLoaded;
   hls.on(Hls.Events.MANIFEST_PARSED, onReady);
   hls.on(Hls.Events.ERROR, onError);
+  hls.on(Hls.Events.FRAG_LOADED, onFragLoaded);
 }
 
 function preferNativeHls(): boolean {
@@ -99,6 +193,7 @@ export function swapMediaSource(
   // только сетевой стек страницы, поэтому такой плейлист всегда через hls.js.
   const wantHls = isHlsUrl(url) && Hls.isSupported() && (isLocalMediaUrl(url) || !preferNativeHls());
   const existing = getAttachedHls(video);
+  traceMediaEvents(video, url, wantHls ? 'hls.js' : (isHlsUrl(url) ? 'native-hls' : 'video'));
 
   if (wantHls) {
     if (existing && !handlers.forceNew) {
@@ -119,6 +214,44 @@ export function swapMediaSource(
   detachHls(video);
   video.src = url;
   return { reused: false, isHls: false };
+}
+
+const MEDIA_ERROR_NAMES: Record<number, string> = {
+  1: 'ABORTED',
+  2: 'NETWORK',
+  3: 'DECODE',
+  4: 'SRC_NOT_SUPPORTED',
+};
+
+/** Диагностика телефона: какой источник получил плеер и чем кончился медиазапрос. */
+function traceMediaEvents(video: HTMLVideoElement, url: string, mode: string): void {
+  playDiag('player:source', { mode, url: diagUrl(url) });
+  const started = Date.now();
+  const onMeta = () => playDiag('player:metadata', {
+    ms: Date.now() - started,
+    size: `${video.videoWidth}x${video.videoHeight}`,
+    duration: Math.round(video.duration || 0),
+  });
+  const onPlaying = () => playDiag('player:playing', { ms: Date.now() - started });
+  const onError = () => {
+    const err = video.error;
+    playDiag('player:error', {
+      code: err ? (MEDIA_ERROR_NAMES[err.code] ?? err.code) : 'unknown',
+      message: err?.message || undefined,
+      url: diagUrl(url),
+    });
+  };
+  video.addEventListener('loadedmetadata', onMeta, { once: true });
+  video.addEventListener('playing', onPlaying, { once: true });
+  video.addEventListener('error', onError, { once: true });
+  // Следующий swap снимает старые слушатели, чтобы не путать источники в логе.
+  const el = video as HTMLVideoElement & { _diagOff?: () => void };
+  el._diagOff?.();
+  el._diagOff = () => {
+    video.removeEventListener('loadedmetadata', onMeta);
+    video.removeEventListener('playing', onPlaying);
+    video.removeEventListener('error', onError);
+  };
 }
 
 export function startHlsFromTime(video: HTMLVideoElement, time: number): void {

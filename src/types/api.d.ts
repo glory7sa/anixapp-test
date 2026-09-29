@@ -244,6 +244,7 @@ export interface AnixApi {
       qualityMap?: Record<string, string>;
       downloadHeaders?: Record<string, string>;
       skip?: { opening?: { start: number; end: number } | null; ending?: { start: number; end: number } | null } | null;
+      error?: string | null;
     }>;
     getVideos: (releaseId: number) => Promise<{
       blocks?: Array<{ category?: { id: number; name: string }; videos?: unknown[] }>;
@@ -710,6 +711,8 @@ export interface AnixApi {
       is_change_login_banned: boolean;
       is_change_avatar_banned: boolean;
       channel_id: number;
+      email_hint?: string;
+      emailHint?: string;
       available_themes?: { id: number; name?: string }[];
       selected_theme_id?: number;
       badge?: {
@@ -749,6 +752,26 @@ export interface AnixApi {
       next_change_avaliable_at: number;
     }>;
     changeLogin: (newLogin: string) => Promise<{ code?: number }>;
+    changeEmail: (data: {
+      current_email: string;
+      current_password: string;
+      new_email: string;
+    }) => Promise<{ code?: number; hash?: string; timestamp_expires?: number }>;
+    changeEmailResend: (data: {
+      new_email: string;
+      current_email: string;
+      current_password: string;
+      hash: string;
+    }) => Promise<{ code?: number; timestamp_expires?: number }>;
+    changeEmailVerify: (data: {
+      new_email: string;
+      code: number;
+      hash: string;
+    }) => Promise<{ code?: number }>;
+    changePassword: (data: {
+      current: string;
+      new: string;
+    }) => Promise<{ code?: number; token?: string }>;
     getBadges: (page?: number) => Promise<{
       code?: number;
       content?: Array<{

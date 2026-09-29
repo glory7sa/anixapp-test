@@ -1,91 +1,65 @@
 'use strict';
 
-const path = require('path');
-const fs = require('fs');
-const { ipcMain, shell, app } = require('electron');
-const logger = require('../logger');
+const { ipcMain, BrowserWindow } = require('electron');
+const { shell, app } = require('electron');
+const diagnostics = require('../session-diagnostics');
 
 function register() {
+  ipcMain.handle('shell:openExternal', (_, url) => {
+    if (!url || typeof url !== 'string') return false;
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+      return shell.openExternal(parsed.href);
+    } catch {
+      return false;
+    }
+  });
 
-ipcMain.handle('shell:openExternal', (_, url) => {
-  if (!url || typeof url !== 'string') return false;
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
-    return shell.openExternal(parsed.href);
-  } catch {
-    return false;
-  }
-});
+  ipcMain.handle('app:getVersion', () => app.getVersion());
 
-ipcMain.handle('app:getVersion', () => app.getVersion());
+  ipcMain.handle('app:getVersions', () => {
+    let anixapiVersion = '';
+    try {
+      const pkg = require('anixapi/package.json');
+      anixapiVersion = pkg.version || '';
+    } catch (_) {}
+    return {
+      app: app.getVersion(),
+      electron: process.versions.electron,
+      chrome: process.versions.chrome,
+      node: process.versions.node,
+      anixapi: anixapiVersion,
+      anixartjs: anixapiVersion,
+    };
+  });
 
-ipcMain.handle('log:renderer', (_, entry) => {
-  if (entry && typeof entry === 'object') {
-    logger.renderer(entry.level || 'INFO', entry.ch || 'unknown', entry.msg || '', entry.data);
-  }
-});
+  ipcMain.handle('diagnostics:get', (_, opts) => diagnostics.getEntries(opts || {}));
+  ipcMain.handle('diagnostics:stats', () => diagnostics.stats());
+  ipcMain.handle('diagnostics:clear', () => diagnostics.clear());
 
-ipcMain.handle('log:getSessions', () => logger.getSessions().map(s => ({ id: s.id, ts: s.ts })));
+  ipcMain.handle('diagnostics:subscribe', (event) => {
+    const id = event.sender?.id;
+    return diagnostics.subscribe(id);
+  });
 
-ipcMain.handle('log:getSessionLog', (_, sessionId, file, limit) => {
-  const allowed = ['main', 'ipc', 'renderer', 'errors', 'lobby'];
-  const safeFile = allowed.includes(file) ? file : 'main';
-  return logger.getSessionLog(sessionId, safeFile, limit || 500);
-});
+  ipcMain.handle('diagnostics:unsubscribe', (event) => {
+    const id = event.sender?.id;
+    return diagnostics.unsubscribe(id);
+  });
 
-ipcMain.handle('log:getFolderPath', () => logger.getLogsRootDir());
+  ipcMain.handle('diagnostics:exportZip', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    return diagnostics.exportZipWithDialog(win && !win.isDestroyed() ? win : null);
+  });
 
-ipcMain.handle('log:getSessionDir', () => logger.getCurrentSessionDir());
+  ipcMain.handle('diagnostics:paths', () => diagnostics.getPaths());
+  ipcMain.handle('diagnostics:openDir', () => diagnostics.openLogsDir());
 
-ipcMain.handle('log:getLobbyPath', () => logger.getLobbyLogPath());
-
-ipcMain.handle('log:lobbyLine', (_, line) => {
-  if (typeof line === 'string') logger.writeLobbyPlain(line);
-});
-
-ipcMain.handle('log:getSystemInfo', () => logger.getSystemInfo());
-
-ipcMain.handle('log:collectZip', async () => {
-  try {
-    const buf = logger.collectZip();
-    const dir = logger.getCurrentSessionDir() || app.getPath('temp');
-    const zipPath = path.join(dir, `anixapp-logs-${Date.now()}.zip`);
-    fs.writeFileSync(zipPath, buf);
-    return { ok: true, path: zipPath };
-  } catch (e) {
-    return { ok: false, error: String(e) };
-  }
-});
-
-ipcMain.handle('log:openZip', async (_, zipPath) => {
-  const { shell: s } = require('electron');
-  if (zipPath && fs.existsSync(zipPath)) {
-    await s.showItemInFolder(zipPath);
-  }
-});
-
-ipcMain.handle('log:openFolder', async () => {
-  const { shell: s } = require('electron');
-  const dir = logger.getCurrentSessionDir();
-  if (dir) await s.openPath(dir);
-});
-
-ipcMain.handle('app:getVersions', () => {
-  let anixapiVersion = '';
-  try {
-    const pkg = require('anixapi/package.json');
-    anixapiVersion = pkg.version || '';
-  } catch (_) {}
-  return {
-    app: app.getVersion(),
-    electron: process.versions.electron,
-    chrome: process.versions.chrome,
-    node: process.versions.node,
-    anixapi: anixapiVersion,
-    anixartjs: anixapiVersion,
-  };
-});
+  ipcMain.handle('diagnostics:reveal', async (_, filePath) => {
+    if (filePath) shell.showItemInFolder(filePath);
+    return { ok: true };
+  });
 }
 
 module.exports = { register };
